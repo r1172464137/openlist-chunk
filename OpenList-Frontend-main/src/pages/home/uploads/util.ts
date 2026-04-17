@@ -87,13 +87,35 @@ export const calculateXXHash64 = async (file: File) => {
   return hasher.digest("hex")
 }
 
-// Keep old signature for compatibility if needed, but we essentially replace it
+// Restore original calculateHash for md5, sha1, and sha256
 export const calculateHash = async (file: File) => {
-  return calculateXXHash64(file).then((xxhash) => ({
-    xxhash,
-    md5: "",
-    sha1: "",
-    sha256: "",
-  }))
+  const [md5Hasher, sha1Hasher, sha256Hasher] = await Promise.all([
+    createMD5(),
+    createSHA1(),
+    createSHA256(),
+  ])
+
+  const reader = file.stream().getReader()
+
+  const read = async () => {
+    const { done, value } = await reader.read()
+    if (done) {
+      return
+    }
+    md5Hasher.update(value)
+    sha1Hasher.update(value)
+    sha256Hasher.update(value)
+    
+    // Yield to main thread to prevent UI freeze
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await read()
+  }
+
+  await read()
+  return {
+    md5: md5Hasher.digest("hex"),
+    sha1: sha1Hasher.digest("hex"),
+    sha256: sha256Hasher.digest("hex"),
+  }
 }
  

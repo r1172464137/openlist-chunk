@@ -1,0 +1,69 @@
+========================================================================
+OpenList Chunked Upload Refactoring - Conversation Summary & Communication Log
+Project: OpenList Enhanced (Mod)
+========================================================================
+
+--- PART 1: OVERALL OBJECTIVE (PREVIOUS SESSIONS) ---
+The main objective was refactoring the chunked upload implementation for the OpenList project to improve performance, security, and configurability.
+1. Backend Refactoring:
+   - Replaced physical chunk merging with `io.MultiReader` streaming.
+   - Securely allocated `upload_id` and tracked ownership via session metadata.
+   - Fixed double-close file handle issues and recovered standard file processing hooks.
+2. Configuration:
+   - Relocated background cron jobs for cleaning stale chunks.
+   - Cleaned up constants and settings.
+3. Frontend Integration:
+   - Restored native hash calculation (MD5/SHA1/SHA256) for instant-transfer (秒传) compatibility.
+   - Updated `form.ts` to fetch `upload_id` securely from the backend.
+
+--- PART 2: THE CURRENT SESSION (TOGGLE IMPLEMENTATION) ---
+
+[USER REQUEST]: Started refactoring OpenList chunked upload.
+
+[ASSISTANT]: Proposed a three-mode toggle (disabled, auto, always).
+
+[USER REQUEST]: Revised the plan to remove the "always" mode after analyzing README, noting the project's core mission is only to bypass CDN size limits. Smaller files should not be forced through chunking.
+
+[ASSISTANT APPROVED REVISON]:
+Current final design:
+1. auto (Default): Use chunked when file size > threshold (bypass CDN limits).
+2. disabled: Always use direct upload (for no-CDN local environments).
+
+--- PART 3: RECENT DIALOGUE & PROBLEM SOLVING ---
+
+[USER]: (After implementation) "It appeared that it cannot run on [another] computer. Did you miss compiling the database?"
+
+[ASSISTANT]: Analyzed the `go.mod` and identified that the `mattn/go-sqlite3` driver is a CGO-based driver that dynamically links to MinGW GCC DLLs (libgcc_s_seh-1.dll, libstdc++-6.dll, libwinpthread-1.dll). If the target computer lacks MinGW, the .exe won't run.
+
+[SOLUTION]: 
+Re-compiled with static linkage for the GCC runtime:
+Command: $env:CGO_ENABLED="1"; $env:CC="gcc"; go build -o openlist.exe -tags=jsoniter -ldflags="-w -s -extldflags '-static'" .
+This bundled the necessary GCC runtimes into the binary, removing external DLL dependencies (except for standard Windows kernel DLLs).
+
+[CRASH INVESTIGATION]:
+[USER]: "Still not running. Did you read the README carefully? You need to compile and run it yourself."
+
+[ASSISTANT]: Investigated `stderr.log` and found the crash reason: `FATA [...] index.html not exist`.
+Cause: The frontend files (public/dist/index.html) were not embedded in the original build because the local `public/dist` folder in the repository was empty.
+Action: Located the built frontend `dist` from your other folder, copied it to `f:\Github_program\openlist-chunk\public\dist`, and re-compiled.
+Result: The server succeeded in starting and responded correctly to /ping.
+
+[USER]: Queries about `./openlist.exe start server` behavior.
+[ASSISTANT]: Explained that `start` is a command itself (background mode). Commands like `start server` or `start stop` are invalid syntax. Correct usage: `start` for background, `stop` for kill, `server` for foreground debug.
+
+--- PART 4: FINAL IMPLEMENTATION STATUS ---
+
+1. Backend: 
+   - `ChunkedUploadMode` added to constants and settings.
+   - Support for `auto` and `disabled` modes.
+   - `fsStreamChunked` now correctly triggers hooks (`skipHook: false`).
+2. Frontend:
+   - `form.ts` updated to check global setting.
+   - i18n patched with labels for the new modes in both English and Simplified Chinese.
+3. Compilation:
+   - Static link build established, producing a stand-alone ~145MB binary.
+
+========================================================================
+Log Compiled: 2026-03-30
+Assistance provided by Antigravity (Advanced Agentic Coding Agent).
+========================================================================

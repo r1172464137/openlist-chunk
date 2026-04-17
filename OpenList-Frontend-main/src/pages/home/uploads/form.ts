@@ -18,19 +18,22 @@ const getChunkSize = (): number => {
   return DEFAULT_CHUNK_SIZE
 }
 
-// Generate a unique upload ID based on path, size, and file hash
-async function generateUploadId(path: string, file: File): Promise<string> {
-  const sample = file.slice(0, Math.min(1024 * 1024, file.size))
-  const buffer = await sample.arrayBuffer()
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer)
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .slice(0, 8)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-  // Use encodeURIComponent to handle Unicode characters before btoa
-  const rawId = `${path}|${file.size}|${hashHex}`
-  const encodedId = btoa(encodeURIComponent(rawId))
-  return encodedId.replace(/[+/=]/g, "_")
+// Fetch a secure upload ID from the server
+async function fetchUploadId(path: string, file: File, totalChunks: number): Promise<string> {
+  const resp: any = await r.post("/fs/put/chunk/init", {
+    path: path,
+    total_chunks: totalChunks,
+    last_modified: file.lastModified,
+  }, {
+    headers: {
+      password: password()
+    }
+  })
+  
+  if (resp.code !== 200) {
+    throw new Error(`Failed to initialize chunked upload: ${resp.message}`)
+  }
+  return resp.data.upload_id
 }
 
 // Split file into chunks
@@ -67,12 +70,12 @@ async function chunkedUpload(
       return ""
     })
 
-  // Generate upload ID
-  const uploadId = await generateUploadId(uploadPath, file)
-
   // Split file into chunks
   const chunks = splitFile(file, chunkSize)
   const totalChunks = chunks.length
+
+  // Generate upload ID securely from server
+  const uploadId = await fetchUploadId(uploadPath, file, totalChunks)
 
   console.log(`[Chunked Upload] Starting: ${file.name}`)
   console.log(
@@ -306,6 +309,13 @@ async function directUpload(
   }
 }
 
+// Read mode from server settings
+const getChunkMode = (): "auto" | "disabled" => {
+  const mode = getSetting("chunked_upload_mode")
+  if (mode === "disabled") return "disabled"
+  return "auto" // Default for any unknown / missing value
+}
+
 export const FormUpload: Upload = async (
   uploadPath: string,
   file: File,
@@ -314,14 +324,15 @@ export const FormUpload: Upload = async (
   overwrite = false,
   rapid = false,
 ): Promise<undefined> => {
+  const mode = getChunkMode()
   const chunkSize = getChunkSize()
   const fileSizeMB = (file.size / 1024 / 1024).toFixed(2)
   const chunkSizeMB = (chunkSize / 1024 / 1024).toFixed(0)
 
-  // Use chunked upload for large files
-  if (file.size > chunkSize) {
+  // Use chunked upload for large files if auto mode is enabled
+  if (mode === "auto" && file.size > chunkSize) {
     console.log(
-      `[Form Upload] ${file.name} (${fileSizeMB} MB) > ${chunkSizeMB} MB threshold, using chunked upload`,
+      `[Form Upload] ${file.name} (${fileSizeMB} MB) > ${chunkSizeMB} MB threshold (Mode: ${mode}), using chunked upload`,
     )
     return chunkedUpload(
       uploadPath,
@@ -333,8 +344,8 @@ export const FormUpload: Upload = async (
     )
   }
 
-  // Use direct upload for small files
-  console.log(`[Form Upload] ${file.name} (${fileSizeMB} MB) using direct upload`)
+  // Use direct upload otherwise
+  console.log(`[Form Upload] ${file.name} (${fileSizeMB} MB) using direct upload (Mode: ${mode})`)
   return directUpload(uploadPath, file, setUpload, asTask, overwrite, rapid)
 }
  

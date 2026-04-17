@@ -11,6 +11,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/net"
+	"github.com/OpenListTeam/OpenList/v4/pkg/cron"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/caarlos0/env/v9"
 	"github.com/shirou/gopsutil/v4/mem"
@@ -147,6 +148,9 @@ func InitConfig() {
 
 	base.InitClient()
 	initURL()
+
+	// Start background task to clean stale chunks every 10 minutes
+	cron.NewCron(10 * time.Minute).Do(CleanStaleChunks)
 }
 
 func confFromEnv() {

@@ -2,7 +2,11 @@ package handles
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"hash"
+	"hash/crc32"
 	"io"
 	"net/url"
 	"os"
@@ -21,7 +25,9 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/task"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
+	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func getLastModified(c *gin.Context) time.Time {
@@ -33,6 +39,48 @@ func getLastModified(c *gin.Context) time.Time {
 	}
 	lastModified := time.UnixMilli(lastModifiedMillisecond)
 	return lastModified
+}
+
+// getUserFromContext extracts user from gin context
+func getUserFromContext(c *gin.Context) *model.User {
+	return c.Request.Context().Value(conf.UserKey).(*model.User)
+}
+
+// resolveUserPath resolves raw path to absolute path with user permission check
+func resolveUserPath(c *gin.Context, rawPath string) (string, error) {
+	user := getUserFromContext(c)
+	return user.JoinPath(rawPath)
+}
+
+// checkFileExists checks if file exists when overwrite is not allowed
+func checkFileExists(ctx context.Context, path string, overwrite bool) error {
+	if overwrite {
+		return nil
+	}
+	if res, _ := fs.Get(ctx, path, &fs.GetArgs{NoLog: true}); res != nil {
+		return fmt.Errorf("file exists")
+	}
+	return nil
+}
+
+// checkWritePermission checks if user has write permission to the storage
+func checkWritePermission(path string) error {
+	storage, err := fs.GetStorage(path, &fs.GetStoragesArgs{})
+	if err != nil {
+		return err
+	}
+	if storage.Config().NoUpload {
+		return fmt.Errorf("storage does not support upload")
+	}
+	return nil
+}
+
+// validateFileName checks if filename should be ignored as system file
+func validateFileName(name string) error {
+	if shouldIgnoreSystemFile(name) {
+		return errs.IgnoredSystemFile
+	}
+	return nil
 }
 
 // shouldIgnoreSystemFile checks if the filename should be ignored based on settings
@@ -191,7 +239,7 @@ func fsStreamChunked(c *gin.Context, contentRange string) {
 				WebPutAsTask: false, // Chunked upload is inherently async-safe
 			}
 			// Use background context since original request may complete
-			err := fs.PutDirectly(context.Background(), dir, s, true)
+			err := fs.PutDirectly(context.Background(), dir, s, false)
 			session.done <- err
 		}()
 	}
@@ -313,7 +361,7 @@ func fsStreamDirect(c *gin.Context) {
 	if asTask {
 		t, err = fs.PutAsTask(c.Request.Context(), dir, s)
 	} else {
-		err = fs.PutDirectly(c.Request.Context(), dir, s, true)
+		err = fs.PutDirectly(c.Request.Context(), dir, s)
 	}
 	if err != nil {
 		common.ErrorResp(c, err, 500)
@@ -413,7 +461,7 @@ func FsForm(c *gin.Context) {
 		}{f}
 		t, err = fs.PutAsTask(c.Request.Context(), dir, s)
 	} else {
-		err = fs.PutDirectly(c.Request.Context(), dir, s, true)
+		err = fs.PutDirectly(c.Request.Context(), dir, s)
 	}
 	if err != nil {
 		common.ErrorResp(c, err, 500)
@@ -426,6 +474,102 @@ func FsForm(c *gin.Context) {
 	common.SuccessResp(c, gin.H{
 		"task": getTaskInfo(t),
 	})
+}
+
+type hashVerifyingReader struct {
+	io.Reader
+	hasher   hash.Hash
+	expected string
+	verified bool
+}
+
+func (r *hashVerifyingReader) Read(p []byte) (n int, err error) {
+	n, err = r.Reader.Read(p)
+	if n > 0 {
+		r.hasher.Write(p[:n])
+	}
+	if err == io.EOF && !r.verified {
+		actual := hex.EncodeToString(r.hasher.Sum(nil))
+		if r.expected != "" && actual != r.expected {
+			return n, fmt.Errorf("hash mismatch: expected %s, got %s", r.expected, actual)
+		}
+		r.verified = true
+	}
+	return n, err
+}
+
+// FsChunkInit securely allocates an upload_id and stores session info
+func FsChunkInit(c *gin.Context) {
+	var req struct {
+		Path         string `json:"path"`
+		TotalChunks  int    `json:"total_chunks"`
+		LastModified int64  `json:"last_modified"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+
+	path, err := resolveUserPath(c, req.Path)
+	if err != nil {
+		common.ErrorResp(c, err, 403)
+		return
+	}
+
+	if err := checkWritePermission(path); err != nil {
+		common.ErrorStrResp(c, "no write permission", 403)
+		return
+	}
+
+	uploadId := uuid.NewString()
+	chunkDir := getChunkDir(uploadId)
+	if err := os.MkdirAll(chunkDir, 0755); err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+
+	sessionData := map[string]interface{}{
+		"user_id":       getUserFromContext(c).ID,
+		"path":          req.Path,
+		"total_chunks":  req.TotalChunks,
+		"last_modified": req.LastModified,
+		"created_at":    time.Now().Unix(),
+	}
+
+	sessionBytes, _ := json.Marshal(sessionData)
+	err = os.WriteFile(stdpath.Join(chunkDir, "session.json"), sessionBytes, 0644)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+
+	common.SuccessResp(c, gin.H{
+		"upload_id": uploadId,
+	})
+}
+
+func getChunkDir(uploadId string) string {
+	return stdpath.Join(conf.Conf.TempDir, "chunks", uploadId)
+}
+
+func getAndVerifyChunkSession(c *gin.Context, uploadId string) (map[string]interface{}, string, error) {
+	chunkDir := getChunkDir(uploadId)
+	sessionPath := stdpath.Join(chunkDir, "session.json")
+
+	sessionBytes, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid upload_id or session expired")
+	}
+
+	var sessionData map[string]interface{}
+	json.Unmarshal(sessionBytes, &sessionData)
+
+	user := getUserFromContext(c)
+	if float64(user.ID) != sessionData["user_id"].(float64) {
+		return nil, "", fmt.Errorf("unauthorized access to chunk session")
+	}
+
+	return sessionData, chunkDir, nil
 }
 
 // FsChunkUpload handles uploading a single chunk of a large file
@@ -442,32 +586,26 @@ func FsChunkUpload(c *gin.Context) {
 		return
 	}
 
-	// Get the chunk file from form
+	_, chunkDir, err := getAndVerifyChunkSession(c, uploadId)
+	if err != nil {
+		common.ErrorStrResp(c, err.Error(), 403)
+		return
+	}
+
 	file, err := c.FormFile("file")
 	if err != nil {
 		common.ErrorResp(c, err, 400)
 		return
 	}
 
-	// Create chunk directory
-	chunkDir := stdpath.Join(conf.Conf.TempDir, "chunks", uploadId)
-	if err := os.MkdirAll(chunkDir, 0755); err != nil {
-		common.ErrorResp(c, err, 500)
-		return
-	}
-
-	// Save chunk to file
 	chunkPath := stdpath.Join(chunkDir, indexStr)
-	// Get CRC32 from header
 	expectedCRC32 := c.GetHeader("X-Chunk-CRC32")
 
-	// Save the uploaded file temporarily
 	if err := c.SaveUploadedFile(file, chunkPath); err != nil {
 		common.ErrorResp(c, err, 500)
 		return
 	}
 
-	// Always calculate CRC32 of the saved chunk for verification and response
 	f, err := os.Open(chunkPath)
 	if err != nil {
 		common.ErrorResp(c, err, 500)
@@ -475,20 +613,15 @@ func FsChunkUpload(c *gin.Context) {
 	}
 	defer f.Close()
 
-	actualCRC32, err := utils.HashReader(utils.CRC32, f)
-	if err != nil {
-		os.Remove(chunkPath) // Clean up
-		common.ErrorResp(c, err, 500)
-		return
-	}
+	hasher := crc32.NewIEEE()
+	io.Copy(hasher, f)
+	actualCRC32 := hex.EncodeToString(hasher.Sum(nil))
 
-	// Verify CRC32 if provided
-	if expectedCRC32 != "" {
-		if actualCRC32 != expectedCRC32 {
-			os.Remove(chunkPath) // Clean up
-			common.ErrorStrResp(c, fmt.Sprintf("chunk CRC32 mismatch: client=%s, server=%s", expectedCRC32, actualCRC32), 400)
-			return
-		}
+	if expectedCRC32 != "" && actualCRC32 != expectedCRC32 {
+		f.Close()
+		os.Remove(chunkPath)
+		common.ErrorStrResp(c, fmt.Sprintf("chunk CRC32 mismatch: client=%s, server=%s", expectedCRC32, actualCRC32), 400)
+		return
 	}
 
 	common.SuccessResp(c, gin.H{
@@ -496,218 +629,35 @@ func FsChunkUpload(c *gin.Context) {
 	})
 }
 
-// FsChunkMerge merges all chunks into a single file and uploads it
-func FsChunkMerge(c *gin.Context) {
-	var req struct {
-		UploadId     string `json:"upload_id"`
-		Path         string `json:"path"`
-		TotalChunks  int    `json:"total_chunks"`
-		AsTask       bool   `json:"as_task"`
-		Overwrite    bool   `json:"overwrite"`
-		LastModified int64  `json:"last_modified"`
-		Hash         string `json:"hash"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ErrorResp(c, err, 400)
-		return
-	}
-
-	user := c.Request.Context().Value(conf.UserKey).(*model.User)
-	path, err := user.JoinPath(req.Path)
-	if err != nil {
-		common.ErrorResp(c, err, 403)
-		return
-	}
-
-	// Check if file exists when not overwriting
-	if !req.Overwrite {
-		if res, _ := fs.Get(c.Request.Context(), path, &fs.GetArgs{NoLog: true}); res != nil {
-			common.ErrorStrResp(c, "file exists", 403)
-			return
-		}
-	}
-
-	chunkDir := stdpath.Join(conf.Conf.TempDir, "chunks", req.UploadId)
-
-	// Check if all chunks exist (quick check, no heavy I/O)
-	for i := 0; i < req.TotalChunks; i++ {
-		chunkPath := stdpath.Join(chunkDir, strconv.Itoa(i))
-		if _, err := os.Stat(chunkPath); os.IsNotExist(err) {
-			common.ErrorStrResp(c, "chunk "+strconv.Itoa(i)+" not found", 400)
-			return
-		}
-	}
-
-	dir, name := stdpath.Split(path)
-
-	// Check if system file should be ignored
-	if shouldIgnoreSystemFile(name) {
-		os.RemoveAll(chunkDir)
-		common.ErrorStrResp(c, errs.IgnoredSystemFile.Error(), 403)
-		return
-	}
-
-	lastModified := time.Now()
-	if req.LastModified > 0 {
-		lastModified = time.UnixMilli(req.LastModified)
-	}
-
-	// For as_task=true (large files), immediately return and process in background
-	if req.AsTask {
-		// Generate a simple task ID for tracking
-		taskId := fmt.Sprintf("merge-%s", req.UploadId)
-
-		// Start background goroutine for merge
-		go func() {
-			utils.Log.Infof("[ChunkMerge] Starting background merge for %s", path)
-
-			// Create merged file
-			mergedPath := stdpath.Join(chunkDir, "merged")
-			mergedFile, err := os.Create(mergedPath)
-			if err != nil {
-				utils.Log.Errorf("[ChunkMerge] Failed to create merged file: %v", err)
-				return
-			}
-
-			// Merge all chunks while computing hash
-			var totalSize int64
-			hasher := utils.NewMultiHasher([]*utils.HashType{utils.XXH64, utils.CRC64})
-			multiWriter := io.MultiWriter(mergedFile, hasher)
-			for i := 0; i < req.TotalChunks; i++ {
-				chunkPath := stdpath.Join(chunkDir, strconv.Itoa(i))
-				chunk, err := os.Open(chunkPath)
-				if err != nil {
-					mergedFile.Close()
-					utils.Log.Errorf("[ChunkMerge] Failed to open chunk %d: %v", i, err)
-					return
-				}
-				n, err := io.Copy(multiWriter, chunk)
-				chunk.Close()
-				if err != nil {
-					mergedFile.Close()
-					utils.Log.Errorf("[ChunkMerge] Failed to copy chunk %d: %v", i, err)
-					return
-				}
-				totalSize += n
-			}
-			mergedFile.Close()
-
-			hashInfo := hasher.GetHashInfo()
-			hashMap := hashInfo.Export()
-
-			// Verify client provided hash (xxHash64)
-			if req.Hash != "" {
-				for ht, hashValue := range hashMap {
-					if ht.Name == "xxh64" && hashValue != req.Hash {
-						os.RemoveAll(chunkDir)
-						utils.Log.Errorf("[ChunkMerge] Hash mismatch: Client=%s, Server=%s", req.Hash, hashValue)
-						return
-					}
-				}
-			}
-
-			utils.Log.Infof("[ChunkMerge] Merge complete. Size: %d bytes. Uploading to storage...", totalSize)
-
-			// Open merged file for upload
-			mergedReader, err := os.Open(mergedPath)
-			if err != nil {
-				utils.Log.Errorf("[ChunkMerge] Failed to open merged file: %v", err)
-				return
-			}
-
-			s := &stream.FileStream{
-				Obj: &model.Object{
-					Name:     name,
-					Size:     totalSize,
-					Modified: lastModified,
-				},
-				Reader:       mergedReader,
-				Mimetype:     utils.GetMimeType(name),
-				WebPutAsTask: true,
-			}
-			s.Closers.Add(utils.CloseFunc(func() error {
-				mergedReader.Close()
-				os.RemoveAll(chunkDir)
-				return nil
-			}))
-
-			// Use background context since original request context is gone
-			ctx := context.Background()
-			_, err = fs.PutAsTask(ctx, dir, s)
-			if err != nil {
-				utils.Log.Errorf("[ChunkMerge] Failed to put as task: %v", err)
-				return
-			}
-			utils.Log.Infof("[ChunkMerge] Successfully queued upload task for %s", path)
-		}()
-
-		// Immediately return success with task info
-		common.SuccessResp(c, gin.H{
-			"task": gin.H{
-				"id":      taskId,
-				"status":  "processing",
-				"message": "Merge started in background. Check Tasks page for progress.",
-			},
-		})
-		return
-	}
-
-	// For as_task=false (small files or direct upload), use synchronous logic
-	mergedPath := stdpath.Join(chunkDir, "merged")
-	mergedFile, err := os.Create(mergedPath)
-	if err != nil {
-		common.ErrorResp(c, err, 500)
-		return
-	}
-
-	// Merge all chunks while computing hash
+// buildMergeStream prepares an io.MultiReader to stream all chunks without copying
+func buildMergeStream(chunkDir, name string, totalChunks int, lastModified time.Time, expectedHash string) (*stream.FileStream, error) {
+	var readers []io.Reader
+	var closers []io.Closer
 	var totalSize int64
-	hasher := utils.NewMultiHasher([]*utils.HashType{utils.XXH64, utils.CRC64})
-	multiWriter := io.MultiWriter(mergedFile, hasher)
-	for i := 0; i < req.TotalChunks; i++ {
+
+	for i := 0; i < totalChunks; i++ {
 		chunkPath := stdpath.Join(chunkDir, strconv.Itoa(i))
-		chunk, err := os.Open(chunkPath)
+		f, err := os.Open(chunkPath)
 		if err != nil {
-			mergedFile.Close()
-			common.ErrorResp(c, err, 500)
-			return
-		}
-		n, err := io.Copy(multiWriter, chunk)
-		chunk.Close()
-		if err != nil {
-			mergedFile.Close()
-			common.ErrorResp(c, err, 500)
-			return
-		}
-		totalSize += n
-	}
-	mergedFile.Close()
-	hashInfo := hasher.GetHashInfo()
-	hashMap := hashInfo.Export()
-	// Prepare hash map for response
-	hashResponse := make(map[string]string)
-	for ht, hashValue := range hashMap {
-		hashResponse[ht.Name] = hashValue
-	}
-
-	// Verify client provided hash (xxHash64)
-	if req.Hash != "" {
-		if serverHash, ok := hashResponse["xxh64"]; ok {
-			if serverHash != req.Hash {
-				// Hash mismatch!
-				os.Remove(mergedPath)
-				common.ErrorStrResp(c, fmt.Sprintf("Hash mismatch: Client=%s, Server=%s", req.Hash, serverHash), 400)
-				return
+			for _, c := range closers {
+				c.Close()
 			}
+			return nil, fmt.Errorf("chunk %d not found or unreadable: %w", i, err)
 		}
+		stat, _ := f.Stat()
+		totalSize += stat.Size()
+
+		readers = append(readers, f)
+		closers = append(closers, f)
 	}
 
-	// Open merged file for upload
-	mergedReader, err := os.Open(mergedPath)
-	if err != nil {
-		common.ErrorResp(c, err, 500)
-		return
+	multiReader := io.MultiReader(readers...)
+
+	hasher := xxhash.New()
+	verifyingReader := &hashVerifyingReader{
+		Reader:   multiReader,
+		hasher:   hasher,
+		expected: expectedHash,
 	}
 
 	s := &stream.FileStream{
@@ -716,26 +666,102 @@ func FsChunkMerge(c *gin.Context) {
 			Size:     totalSize,
 			Modified: lastModified,
 		},
-		Reader:       mergedReader,
-		Mimetype:     utils.GetMimeType(name),
-		WebPutAsTask: false,
+		Reader:   verifyingReader,
+		Mimetype: utils.GetMimeType(name),
 	}
+
 	s.Closers.Add(utils.CloseFunc(func() error {
-		mergedReader.Close()
+		for _, c := range closers {
+			c.Close()
+		}
 		os.RemoveAll(chunkDir)
 		return nil
 	}))
 
-	err = fs.PutDirectly(c.Request.Context(), dir, s, true)
-	mergedReader.Close()
-	os.RemoveAll(chunkDir)
+	return s, nil
+}
 
+// FsChunkMerge streams all chunks into a single file directly to storage
+func FsChunkMerge(c *gin.Context) {
+	var req struct {
+		UploadId  string `json:"upload_id"`
+		AsTask    bool   `json:"as_task"`
+		Overwrite bool   `json:"overwrite"`
+		Hash      string `json:"hash"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+
+	sessionData, chunkDir, err := getAndVerifyChunkSession(c, req.UploadId)
+	if err != nil {
+		common.ErrorStrResp(c, err.Error(), 403)
+		return
+	}
+
+	reqPath := sessionData["path"].(string)
+	path, err := resolveUserPath(c, reqPath)
+	if err != nil {
+		common.ErrorResp(c, err, 403)
+		return
+	}
+
+	if err := checkFileExists(c.Request.Context(), path, req.Overwrite); err != nil {
+		common.ErrorStrResp(c, err.Error(), 403)
+		return
+	}
+
+	totalChunks := int(sessionData["total_chunks"].(float64))
+
+	for i := 0; i < totalChunks; i++ {
+		chunkPath := stdpath.Join(chunkDir, strconv.Itoa(i))
+		if _, err := os.Stat(chunkPath); os.IsNotExist(err) {
+			common.ErrorStrResp(c, "chunk "+strconv.Itoa(i)+" not found", 400)
+			return
+		}
+	}
+
+	dir, name := stdpath.Split(path)
+	if err := validateFileName(name); err != nil {
+		os.RemoveAll(chunkDir)
+		common.ErrorStrResp(c, err.Error(), 403)
+		return
+	}
+
+	lastModified := time.Now()
+	if lm, ok := sessionData["last_modified"].(float64); ok && lm > 0 {
+		lastModified = time.UnixMilli(int64(lm))
+	}
+
+	s, err := buildMergeStream(chunkDir, name, totalChunks, lastModified, req.Hash)
 	if err != nil {
 		common.ErrorResp(c, err, 500)
 		return
 	}
 
+	s.WebPutAsTask = req.AsTask
+
+	var t task.TaskExtensionInfo
+	if req.AsTask {
+		t, err = fs.PutAsTask(c.Request.Context(), dir, s)
+	} else {
+		err = fs.PutDirectly(c.Request.Context(), dir, s)
+	}
+
+	if err != nil {
+		s.Closers.Close()
+		common.ErrorResp(c, err, 500)
+		return
+	}
+
+	if t == nil {
+		common.SuccessResp(c)
+		return
+	}
+
 	common.SuccessResp(c, gin.H{
-		"hash": hashResponse,
+		"task": getTaskInfo(t),
 	})
 }

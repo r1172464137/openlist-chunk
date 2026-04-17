@@ -137,6 +137,9 @@ const (
 	Pan123OpenOfflineDownloadCallbackUrl = "123_open_callback_url"
 	Pan123OpenTempDir                    = "123_open_temp_dir"
 
+	// 123
+	Pan123TempDir                        = "123_temp_dir"
+
 	// ftp
 	FTPPublicHost            = "ftp_public_host"
 	FTPPasvPortMap           = "ftp_pasv_port_map"
@@ -159,15 +162,9 @@ const (
 	StreamMaxServerDownloadSpeed          = "max_server_download_speed"
 	StreamMaxServerUploadSpeed            = "max_server_upload_speed"
 
-	// HTTP Server Timeouts (传输超时配置)
-	HTTPServerReadTimeout       = "http_server_read_timeout"        // 读取请求超时（秒），0表示无限制
-	HTTPServerWriteTimeout      = "http_server_write_timeout"       // 写入响应超时（秒），0表示无限制
-	HTTPServerIdleTimeout       = "http_server_idle_timeout"        // 空闲连接超时（秒）
-	HTTPServerReadHeaderTimeout = "http_server_read_header_timeout" // 读取Header超时（秒）
-	HTTPServerMaxHeaderBytes    = "http_server_max_header_bytes"    // Header最大字节数
-
-	// Chunked Upload (分片上传配置)
-	ChunkedUploadChunkSize = "chunked_upload_chunk_size" // 分片大小（MB），超过此大小的文件将自动分片上传
+	// Chunked Upload (分片上传配置，用于绕过 CDN 大小限制)
+	ChunkedUploadMode      = "chunked_upload_mode"       // 分片上传开关: auto(默认)/disabled
+	ChunkedUploadChunkSize = "chunked_upload_chunk_size" // 分片阈值(MB)，仅 auto 模式时生效
 )
 
 const (
