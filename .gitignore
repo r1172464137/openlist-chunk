@@ -32,3 +32,9 @@ output/
 /!public/dist/README.md
 
 .VSCodeCounter
+*.log
+chunk_scan.txt
+found_indexes.txt
+upload_files.txt
+diff_utf8.txt
+主分支维护者反馈.txt
