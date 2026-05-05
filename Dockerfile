@@ -8,7 +8,7 @@ RUN apk add --no-cache bash curl jq gcc git go musl-dev
 COPY go.mod go.sum ./
 RUN go mod download
 COPY ./ ./
-RUN bash build.sh release docker
+RUN bash build.sh dev docker
 
 FROM openlistteam/openlist-base-image:${BASE_IMAGE_TAG}
 LABEL MAINTAINER="OpenList"
