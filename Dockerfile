@@ -10,9 +10,6 @@ RUN go mod download
 
 COPY ./ ./
 
-# 🔑 备份 chunk 前端（build.sh 会删掉它）
-RUN cp -r public/dist /tmp/chunk-dist
-
 # 造假 git
 RUN git init && \
     git config user.email "build@docker" && \
@@ -20,13 +17,8 @@ RUN git init && \
     git add -A && \
     git commit -m "build"
 
-# 🔑 让 build.sh 随便跑，覆盖就覆盖
-RUN bash build.sh dev docker
-
-# 🔑 关键：把 chunk 前端恢复回去，重新编译二进制
-RUN rm -rf public/dist && \
-    cp -r /tmp/chunk-dist public/dist && \
-    builtAt="$(date +'%F %T %z')" && \
+# 🔑 直接编译，不跑 build.sh！
+RUN builtAt="$(date +'%F %T %z')" && \
     gitCommit=$(git log --pretty=format:"%h" -1) && \
     ldflags="\
 -w -s \
