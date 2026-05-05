@@ -5,10 +5,13 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  watch:                              # 🔑 新增
-    types: [started]                  # 🔑 点 Star 触发
+  watch:
+    types: [started]
 
 jobs:
+  # ----------------------------------------------------------------
+  # 第一步：编译二进制
+  # ----------------------------------------------------------------
   build-backend-binaries:
     runs-on: ubuntu-latest
     steps:
@@ -46,8 +49,8 @@ jobs:
             openlist-windows-amd64.exe
 
       - name: Upload Binaries to Release
-        uses: softprops/action-gh-release@v2      # 🔑 自动发布 Release
-        if: github.event_name == 'watch'           # 🔑 只在 Star 触发时发布
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'watch'
         with:
           tag_name: v1.0.${{ github.run_number }}
           files: |
@@ -56,7 +59,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ----------------------------------------------------------------
+  # 第二步：等编译完，再构建 Docker 镜像并推送
+  # ----------------------------------------------------------------
   build-push-docker:
+    needs: build-backend-binaries          # 🔑 等编译完成
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,6 +71,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Download Binaries             # 🔑 下载编译好的二进制
+        uses: actions/download-artifact@v4
+        with:
+          name: openlist-binaries
+          path: .                           # 🔑 放到构建上下文根目录
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
