@@ -12,58 +12,58 @@ jobs:
   # ----------------------------------------------------------------
   # 第一步：编译二进制
   # ----------------------------------------------------------------
-  build-backend-binaries:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  # build-backend-binaries:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
+  #     - name: Setup Go
+  #       uses: actions/setup-go@v5
+  #       with:
+  #         go-version: '1.23'
 
-      # - name: Install Mingw-w64 (For Windows CGO)
-      #   run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
+  #     # - name: Install Mingw-w64 (For Windows CGO)
+  #     #   run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
 
-      - name: Build for Linux
-        run: |
-          export CGO_ENABLED=1
-          go build -o openlist-linux-amd64 -tags=jsoniter -ldflags="-s -w" .
+  #     - name: Build for Linux
+  #       run: |
+  #         export CGO_ENABLED=1
+  #         go build -o openlist-linux-amd64 -tags=jsoniter -ldflags="-s -w" .
 
-      # - name: Build for Windows
-      #   run: |
-      #     export CGO_ENABLED=1
-      #     export CC=x86_64-w64-mingw32-gcc
-      #     export CXX=x86_64-w64-mingw32-g++
-      #     export GOOS=windows
-      #     export GOARCH=amd64
-      #     go build -o openlist-windows-amd64.exe -tags=jsoniter -ldflags="-s -w" .
+  #     # - name: Build for Windows
+  #     #   run: |
+  #     #     export CGO_ENABLED=1
+  #     #     export CC=x86_64-w64-mingw32-gcc
+  #     #     export CXX=x86_64-w64-mingw32-g++
+  #     #     export GOOS=windows
+  #     #     export GOARCH=amd64
+  #     #     go build -o openlist-windows-amd64.exe -tags=jsoniter -ldflags="-s -w" .
 
-      - name: Upload Binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: openlist-binaries
-          path: |
-            openlist-linux-amd64
-            # openlist-windows-amd64.exe
+  #     - name: Upload Binaries
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: openlist-binaries
+  #         path: |
+  #           openlist-linux-amd64
+  #           # openlist-windows-amd64.exe
 
-      - name: Upload Binaries to Release
-        uses: softprops/action-gh-release@v2
-        if: github.event_name == 'watch'
-        with:
-          tag_name: v1.0.${{ github.run_number }}
-          files: |
-            openlist-linux-amd64
-            # openlist-windows-amd64.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #     - name: Upload Binaries to Release
+  #       uses: softprops/action-gh-release@v2
+  #       if: github.event_name == 'watch'
+  #       with:
+  #         tag_name: v1.0.${{ github.run_number }}
+  #         files: |
+  #           openlist-linux-amd64
+  #           # openlist-windows-amd64.exe
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ----------------------------------------------------------------
   # 第二步：等编译完，再构建 Docker 镜像并推送
   # ----------------------------------------------------------------
   build-push-docker:
-    needs: build-backend-binaries          # 🔑 等编译完成
+    # needs: build-backend-binaries          # 🔑 等编译完成
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,11 +72,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download Binaries             # 🔑 下载编译好的二进制
-        uses: actions/download-artifact@v4
-        with:
-          name: openlist-binaries
-          path: .                           # 🔑 放到构建上下文根目录
+      # - name: Download Binaries             # 🔑 下载编译好的二进制
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: openlist-binaries
+      #     path: .                           # 🔑 放到构建上下文根目录
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
