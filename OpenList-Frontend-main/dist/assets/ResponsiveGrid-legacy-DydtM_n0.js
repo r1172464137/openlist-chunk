@@ -1,1 +1,0 @@
-System.register(["./index-legacy-CjpCPLIr.js"],function(e,t){var n,r,i;return{setters:[function(e){n=e.pn,r=e.yo,i=e.zi}],execute:function(){e("t",e=>{let t;return"responsive"===n("settings_layout")&&(t="repeat(auto-fill, minmax(424px, 1fr))"),r(i,{w:"$full",gap:"$2",templateColumns:{"@initial":"1fr","@lg":t},get children(){return e.children}})})}}});

@@ -1,1 +1,0 @@
-import{Va as e,yi as t,yo as n}from"./index-DIqsNEvT.js";import r from"./Upload-Z-Kn1sAe.js";var i=()=>n(e,{justifyContent:`center`,h:`100vh`,get children(){return n(t,{w:`$md`,get children(){return n(r,{})}})}});export{i as default};

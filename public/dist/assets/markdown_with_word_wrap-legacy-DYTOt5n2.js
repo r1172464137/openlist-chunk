@@ -1,1 +1,0 @@
-System.register(["./index-legacy-CjpCPLIr.js"],function(e,t){var n,r,c,i,o,u;return{setters:[function(e){n=e.$t,r=e.Bn,c=e.Tn,i=e.it,o=e.ni,u=e.yo}],execute:function(){e("default",()=>{const[e]=r();return u(n,{get loading(){return e.loading},get children(){return u(i,{class:"word-wrap",get children(){return e()?.content},get ext(){return o(c.obj.name)},toc:!0})}})})}}});
