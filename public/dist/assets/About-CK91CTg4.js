@@ -1,0 +1,1 @@
+import{$t as e,Jn as t,To as n,Zn as r,it as i,yo as a}from"./index-DIqsNEvT.js";var o=async()=>await(await fetch(`https://raw.githubusercontent.com/OpenListTeam/OpenList/main/README.md`)).text(),s=()=>{r(),t(`manage.sidemenu.about`);let[s]=n(o);return a(e,{get loading(){return s.loading},get children(){return a(i,{get children(){return s()}})}})};export{s as default};
