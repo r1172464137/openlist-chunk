@@ -23,22 +23,22 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Install Mingw-w64 (For Windows CGO)
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
+      # - name: Install Mingw-w64 (For Windows CGO)
+      #   run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
 
       - name: Build for Linux
         run: |
           export CGO_ENABLED=1
           go build -o openlist-linux-amd64 -tags=jsoniter -ldflags="-s -w" .
 
-      - name: Build for Windows
-        run: |
-          export CGO_ENABLED=1
-          export CC=x86_64-w64-mingw32-gcc
-          export CXX=x86_64-w64-mingw32-g++
-          export GOOS=windows
-          export GOARCH=amd64
-          go build -o openlist-windows-amd64.exe -tags=jsoniter -ldflags="-s -w" .
+      # - name: Build for Windows
+      #   run: |
+      #     export CGO_ENABLED=1
+      #     export CC=x86_64-w64-mingw32-gcc
+      #     export CXX=x86_64-w64-mingw32-g++
+      #     export GOOS=windows
+      #     export GOARCH=amd64
+      #     go build -o openlist-windows-amd64.exe -tags=jsoniter -ldflags="-s -w" .
 
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
@@ -46,7 +46,7 @@ jobs:
           name: openlist-binaries
           path: |
             openlist-linux-amd64
-            openlist-windows-amd64.exe
+            # openlist-windows-amd64.exe
 
       - name: Upload Binaries to Release
         uses: softprops/action-gh-release@v2
@@ -55,7 +55,7 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           files: |
             openlist-linux-amd64
-            openlist-windows-amd64.exe
+            # openlist-windows-amd64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
